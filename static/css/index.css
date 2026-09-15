@@ -1556,58 +1556,6 @@ button:focus-visible,
   aspect-ratio: 4 / 5;
 }
 
-.release-links {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.7rem;
-  margin-top: 1rem;
-}
-
-.release-link {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.8rem;
-  padding: 0.72rem 0.84rem;
-  color: var(--ink);
-  border: 1px solid rgba(24, 24, 24, 0.22);
-  border-radius: var(--radius-small);
-  background: rgba(255, 255, 255, 0.25);
-  font-family: "Roboto Mono", monospace;
-  text-decoration: none;
-  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
-}
-
-.release-link:hover {
-  border-color: var(--ink);
-  background: var(--ink);
-  color: var(--paper);
-}
-
-.release-link span {
-  flex: 0 0 auto;
-  color: rgba(24, 24, 24, 0.58);
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0;
-  line-height: 1;
-  text-transform: uppercase;
-}
-
-.release-link:hover span {
-  color: rgba(253, 250, 244, 0.68);
-}
-
-.release-link strong {
-  min-width: 0;
-  font-size: 0.82rem;
-  font-weight: 700;
-  line-height: 1.25;
-  overflow-wrap: anywhere;
-  text-align: right;
-}
-
 .data-va-mosaic {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2724,20 +2672,6 @@ button:focus-visible,
 
   .data-composition {
     min-width: 60rem;
-  }
-
-  .release-links {
-    grid-template-columns: 1fr;
-  }
-
-  .release-link {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 0.3rem;
-  }
-
-  .release-link strong {
-    text-align: left;
   }
 
   .pipeline-canvas {
