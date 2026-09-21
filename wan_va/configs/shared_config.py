@@ -1,4 +1,6 @@
 # Copyright 2024-2025 The Robbyant Team Authors. All rights reserved.
+import os
+
 import torch
 from easydict import EasyDict
 
@@ -13,7 +15,10 @@ va_shared_cfg.save_root = './train_out'
 
 va_shared_cfg.patch_size = (1, 2, 2)
 
-va_shared_cfg.enable_offload = False
+# Local ARC patch: released default is False (assumes an 80GB+ card exclusively).
+# Set True to offload VAE + text encoder to CPU so the 23GB transformer fits an
+# A100 with a shared (Ray) GPU. Numerically equivalent; slower per chunk.
+va_shared_cfg.enable_offload = os.environ.get("ZW_ENABLE_OFFLOAD", "0") == "1"
 
 # Cache the validated latent sample index so repeated training runs do not scan
 # every latent path on network storage again.

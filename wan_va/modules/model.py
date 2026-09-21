@@ -26,10 +26,17 @@ from torch.nn.attention.flex_attention import (
 )
 from functools import partial
 
+# Local ARC patch: the released model config uses attn_mode="torch" (SDPA), so
+# flash_attn_func is never called. No prebuilt flash-attn wheel exists for
+# torch 2.9 / cp310, so make the unused import optional rather than build FA2
+# from source. Restore the original hard import if attn_mode="flashattn".
 try:
     from flash_attn_interface import flash_attn_func
-except:
-    from flash_attn import flash_attn_func
+except ImportError:
+    try:
+        from flash_attn import flash_attn_func
+    except ImportError:
+        flash_attn_func = None
 
 __all__ = ['WanTransformer3DModel']
 
