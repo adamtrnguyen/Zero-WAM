@@ -1340,21 +1340,41 @@ if os.environ.get("ZW_MULTI_SESSION") == "1":
         "target_text_cfg_active": False,
     }
 
+    # The transformer's K/V caches are already namespaced by cache_name, but its
+    # context id caches are plain attributes shared across sessions. Swap them
+    # (in and out) per session alongside the server's own per-episode state.
+    _TRANSFORMER_SESSION_ATTRS = (
+        "type_ids_cache",
+        "seq_ids_cache",
+        "frame_ids_cache",
+        "cache_type_ids_cache",
+    )
+
     def _sessioned_infer(self, obs):
         sid = str(obs.get("session_id", "default")) if isinstance(obs, dict) else "default"
         sessions = self.__dict__.setdefault("_arc_sessions", {})
-        sess = sessions.get(sid)
-        if sess is None:
-            sess = dict(_SESSION_DEFAULTS)
-            sess["cache_name"] = f"pos_{sid}"
-            sessions[sid] = sess
-        for _k, _v in sess.items():
+        entry = sessions.get(sid)
+        if entry is None:
+            state = dict(_SESSION_DEFAULTS)
+            state["cache_name"] = f"pos_{sid}"
+            entry = {
+                "state": state,
+                "tr": {a: None for a in _TRANSFORMER_SESSION_ATTRS},
+            }
+            sessions[sid] = entry
+        state, tr_state = entry["state"], entry["tr"]
+        for _k, _v in state.items():
             setattr(self, _k, _v)
+        transformer = self.transformer
+        for _a, _v in tr_state.items():
+            setattr(transformer, _a, _v)
         try:
             out = _orig_infer_session(self, obs)
         finally:
-            for _k in list(sess.keys()):
-                sess[_k] = getattr(self, _k, None)
+            for _k in list(state.keys()):
+                state[_k] = getattr(self, _k, None)
+            for _a in list(tr_state.keys()):
+                tr_state[_a] = getattr(transformer, _a, None)
         return out
 
     VA_Server.infer = _sessioned_infer
