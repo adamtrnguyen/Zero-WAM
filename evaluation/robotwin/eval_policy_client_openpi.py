@@ -578,7 +578,11 @@ def eval_policy(task_name,
         TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
         episode_info_list = [episode_info["info"]]
         results = generate_episode_descriptions(args["task_name"], episode_info_list, test_num)
-        instruction = np.random.choice(results[0][instruction_type])
+        # Local ARC: the released client samples the instruction unseeded, so it
+        # varies per episode. Set ZW_FIXED_INSTRUCTION to pin it (needed for the
+        # fixed (demo, s0) divergence probe); default keeps upstream behaviour.
+        _fixed = os.environ.get("ZW_FIXED_INSTRUCTION", "")
+        instruction = _fixed if _fixed else np.random.choice(results[0][instruction_type])
         TASK_ENV.set_instruction(instruction=instruction)  # set language instruction
 
         if TASK_ENV.eval_video_path is not None:
