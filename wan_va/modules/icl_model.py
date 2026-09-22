@@ -9,6 +9,7 @@ directly.
 """
 
 import math
+import os
 from copy import deepcopy
 from typing import Optional
 
@@ -34,8 +35,27 @@ ICL_CACHE_TYPE = 2
 PREDICTION_CACHE_TYPE = 1
 OBSERVATION_CACHE_TYPE = 0
 
-_compiled_flex_attention = torch.compile(flex_attention, dynamic=True)
+# Local ARC: the released code hard-codes the flex tile sizes below. Default
+# keeps them byte-for-byte; ZW_FLEX_KERNEL_OPTIONS=autotune omits them so flex
+# picks tiles itself (A/B for speed). ZW_FLEX_MODE sets the torch.compile mode
+# (e.g. "max-autotune"); empty = the released default. See docs/inference_performance.md.
+_FLEX_COMPILE_MODE = os.environ.get("ZW_FLEX_MODE", "")
+_compiled_flex_attention = torch.compile(
+    flex_attention,
+    dynamic=True,
+    **({"mode": _FLEX_COMPILE_MODE} if _FLEX_COMPILE_MODE else {}),
+)
 _compiled_create_block_mask = torch.compile(create_block_mask)
+
+_FLEX_KERNEL_OPTIONS = os.environ.get("ZW_FLEX_KERNEL_OPTIONS", "released")
+_RELEASED_KERNEL_OPTIONS = {
+    "BLOCK_M": 64,
+    "BLOCK_N": 64,
+    "BLOCK_M1": 32,
+    "BLOCK_N1": 64,
+    "BLOCK_M2": 64,
+    "BLOCK_N2": 32,
+}
 
 
 def _apply_rotary_emb(x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
@@ -229,19 +249,15 @@ class ICLAttentionBackend:
         query = query.to(value.dtype)
         key = key.to(value.dtype)
 
+        _flex_kwargs = {}
+        if _FLEX_KERNEL_OPTIONS == "released":
+            _flex_kwargs["kernel_options"] = _RELEASED_KERNEL_OPTIONS
         return _compiled_flex_attention(
             query,
             key,
             value,
             block_mask=block_mask,
-            kernel_options={
-                "BLOCK_M": 64,
-                "BLOCK_N": 64,
-                "BLOCK_M1": 32,
-                "BLOCK_N1": 64,
-                "BLOCK_M2": 64,
-                "BLOCK_N2": 32,
-            },
+            **_flex_kwargs,
         ).transpose(1, 2)
 
 
