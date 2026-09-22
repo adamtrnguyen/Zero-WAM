@@ -711,6 +711,35 @@ def eval_policy(task_name,
                 break
       
 
+        # Local ARC probe logger: persist the executed action sequence and the
+        # terminal end-effector pose so divergence at a fixed (demo, s0) is
+        # measurable. See docs/hypothesis_1.md. The released save_comparison_video
+        # discards action_history.
+        rollout_dir = Path(args['save_root']) / f'stseed-{st_seed}' / 'rollouts' / task_name
+        rollout_dir.mkdir(parents=True, exist_ok=True)
+        np.save(rollout_dir / f'ep{now_id}_actions.npy', np.array(full_action_history))
+        try:
+            _term_obs = TASK_ENV.get_obs()
+            _term_pose = np.array(
+                _term_obs['endpose']['left_endpose'] + [_term_obs['endpose']['left_gripper']]
+                + _term_obs['endpose']['right_endpose'] + [_term_obs['endpose']['right_gripper']],
+                dtype=np.float64,
+            )
+        except Exception:
+            _term_pose = None
+        write_json(
+            {
+                "now_id": int(now_id),
+                "env_seed": int(now_seed),
+                "icl_seed": int(args.get("icl_seed", -1)),
+                "succ": bool(succ),
+                "action_steps": int(len(full_action_history)),
+                "terminal_pose": None if _term_pose is None else _term_pose.tolist(),
+                "prompt": prompt,
+            },
+            rollout_dir / f'ep{now_id}_meta.json',
+        )
+
         vis_dir = Path(args['save_root']) / f'stseed-{st_seed}' / 'visualization' / task_name
         vis_dir.mkdir(parents=True, exist_ok=True)
         video_name = f"{now_id}_{prompt.replace(' ', '_')}_{succ}.mp4"
