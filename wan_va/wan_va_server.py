@@ -1432,6 +1432,46 @@ def main():
     logger.info("Finish all process!!!!!!!!!!!!")
 
 
+# ARC: latent-probe dump. The released server keeps the predicted video latents in
+# `last_predicted_latents` but returns only actions, so the latent is discarded at
+# the protocol boundary. When ZW_DUMP_LATENTS is set, wrap `_infer_icl` (additive,
+# exactly like the ZW_PROFILE hook) and write each chunk's latent to
+#   <dir>/<session_id>/chunk<NNN>.npz
+# so the H7 probe can learn P(candidate realizes the intended future) from latents.
+# Default (env unset): no wrapper installed, algorithm byte-identical to upstream.
+def _arc_dump_latents(server):
+    dump_dir = os.environ.get("ZW_DUMP_LATENTS", "")
+    if not dump_dir:
+        return
+    lat = getattr(server, "last_predicted_latents", None)
+    if lat is None:
+        return
+    try:
+        sid = str(getattr(server, "cache_name", "pos"))
+        sid = sid[4:] if sid.startswith("pos_") else "default"
+        sid = sid.replace("/", "_").replace(os.sep, "_") or "default"
+        chunk = int(getattr(server, "chunk_idx", 0))
+        out_dir = os.path.join(dump_dir, sid)
+        os.makedirs(out_dir, exist_ok=True)
+        arr = lat.detach().to("cpu", torch.float16).numpy()
+        path = os.path.join(out_dir, f"chunk{chunk:03d}.npz")
+        np.savez(path, latent=arr)
+        logger.info(f"[ZW_DUMP_LATENTS] {path} shape={tuple(arr.shape)}")
+    except Exception as exc:  # noqa: BLE001 - diagnostics must never crash inference
+        logger.warning(f"[ZW_DUMP_LATENTS] failed: {exc}")
+
+
+if os.environ.get("ZW_DUMP_LATENTS"):
+    _orig_infer_icl_for_dump = VA_Server._infer_icl
+
+    def _dumping_infer_icl(self, obs):
+        out = _orig_infer_icl_for_dump(self, obs)
+        _arc_dump_latents(self)
+        return out
+
+    VA_Server._infer_icl = _dumping_infer_icl
+
+
 if __name__ == "__main__":
     init_logger()
     main()
