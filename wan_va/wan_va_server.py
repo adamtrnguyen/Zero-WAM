@@ -117,6 +117,36 @@ class VA_Server:
             )
             self.streaming_vae_half = WanVAEStreamingWrapper(vae_half)
 
+        # Local ARC profiling hook (opt-in): profile the FIRST _infer_icl call of
+        # the process under torch.profiler and dump a per-op table + chrome trace.
+        # Gated on ZW_PROFILE=1 so default behaviour is unchanged. Used to decide
+        # which faithful inference optimisations are worth implementing; see
+        # docs/inference_performance.md.
+        if os.environ.get("ZW_PROFILE") == "1":
+            _orig_infer_icl = type(self)._infer_icl
+            _prof_state = {"done": False}
+
+            def _profiled_infer_icl(obs, _self=self, _orig=_orig_infer_icl, _state=_prof_state):
+                if _state["done"]:
+                    return _orig(_self, obs)
+                _state["done"] = True
+                from torch.profiler import profile, ProfilerActivity
+                trace_path = os.environ.get(
+                    "ZW_PROFILE_TRACE",
+                    "/scratch/adanato/wam_rcld/logs/zw_profile_trace.json",
+                )
+                with profile(
+                    activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                    record_shapes=True,
+                ) as prof:
+                    out = _orig(_self, obs)
+                print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=30), flush=True)
+                prof.export_chrome_trace(trace_path)
+                print(f"[ZW_PROFILE] chrome trace -> {trace_path}", flush=True)
+                return out
+
+            self._infer_icl = _profiled_infer_icl
+
     def _get_t5_prompt_embeds(
         self,
         prompt=None,
