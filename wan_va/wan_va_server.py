@@ -1,5 +1,6 @@
 # Copyright 2024-2025 The Robbyant Team Authors. All rights reserved.
 import argparse
+import logging
 import os
 import time
 from functools import partial
@@ -116,36 +117,6 @@ class VA_Server:
                 torch_device='cpu' if self.enable_offload else self.device,
             )
             self.streaming_vae_half = WanVAEStreamingWrapper(vae_half)
-
-        # Local ARC profiling hook (opt-in): profile the FIRST _infer_icl call of
-        # the process under torch.profiler and dump a per-op table + chrome trace.
-        # Gated on ZW_PROFILE=1 so default behaviour is unchanged. Used to decide
-        # which faithful inference optimisations are worth implementing; see
-        # docs/inference_performance.md.
-        if os.environ.get("ZW_PROFILE") == "1":
-            _orig_infer_icl = type(self)._infer_icl
-            _prof_state = {"done": False}
-
-            def _profiled_infer_icl(obs, _self=self, _orig=_orig_infer_icl, _state=_prof_state):
-                if _state["done"]:
-                    return _orig(_self, obs)
-                _state["done"] = True
-                from torch.profiler import profile, ProfilerActivity
-                trace_path = os.environ.get(
-                    "ZW_PROFILE_TRACE",
-                    "/scratch/adanato/wam_rcld/logs/zw_profile_trace.json",
-                )
-                with profile(
-                    activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-                    record_shapes=True,
-                ) as prof:
-                    out = _orig(_self, obs)
-                print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=30), flush=True)
-                prof.export_chrome_trace(trace_path)
-                print(f"[ZW_PROFILE] chrome trace -> {trace_path}", flush=True)
-                return out
-
-            self._infer_icl = _profiled_infer_icl
 
     def _get_t5_prompt_embeds(
         self,
@@ -1254,6 +1225,140 @@ class VA_Server:
         
         decoded_video = self.decode_one_video(pred_latent, 'np')[0]
         export_to_video(decoded_video, os.path.join(self.save_root, "demo.mp4"), fps=10)
+
+# Local ARC profiling hook (opt-in). Applied at class level, at import time, so
+# it survives however the async server obtains the model object. Gated on
+# ZW_PROFILE=1: with the variable unset the class is untouched and behaviour is
+# exactly upstream.
+#   ZW_PROFILE_CALL   which _infer_icl call to profile (default 2; call 1 includes
+#                     torch.compile warmup and is not steady-state)
+#   ZW_PROFILE_STACK  1 to record Python stack traces
+#   ZW_PROFILE_TRACE  base output path
+# Every call's wall time is appended to <base>.wall.log. See docs/inference_performance.md.
+if os.environ.get("ZW_PROFILE") == "1":
+    import time as _time
+
+    _orig_infer_icl = VA_Server._infer_icl
+    _prof_n = {"i": 0}
+    _prof_target = int(os.environ.get("ZW_PROFILE_CALL", "2"))
+    _prof_stack = os.environ.get("ZW_PROFILE_STACK", "0") == "1"
+    _prof_base = os.environ.get(
+        "ZW_PROFILE_TRACE", "/scratch/adanato/wam_rcld/logs/zw_profile_trace.json"
+    )
+
+    def _profiled_infer_icl(self, obs):
+        _prof_n["i"] += 1
+        n = _prof_n["i"]
+        t0 = _time.time()
+        if n != _prof_target:
+            out = _orig_infer_icl(self, obs)
+            try:
+                with open(_prof_base + ".wall.log", "a") as fh:
+                    fh.write(f"{n}\t{_time.time() - t0:.2f}\n")
+            except OSError:
+                pass
+            return out
+        from torch.profiler import profile, ProfilerActivity
+
+        table_path = _prof_base + f".call{n}.table.txt"
+        trace_path = _prof_base + f".call{n}.json"
+        with profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            record_shapes=True,
+            with_stack=_prof_stack,
+        ) as prof:
+            out = _orig_infer_icl(self, obs)
+        wall = _time.time() - t0
+        try:
+            ka = prof.key_averages()
+            with open(table_path, "w") as fh:
+                fh.write(f"call_index={n} wall_s={wall:.1f}\n\n")
+                fh.write("=== sorted by CUDA time ===\n")
+                fh.write(ka.table(sort_by="cuda_time_total", row_limit=50) + "\n\n")
+                fh.write("=== sorted by CPU time ===\n")
+                fh.write(ka.table(sort_by="cpu_time_total", row_limit=50) + "\n")
+                if _prof_stack:
+                    fh.write("\n=== grouped by stack (top 15 by CUDA) ===\n")
+                    fh.write(
+                        prof.key_averages(group_by_stack_n=15).table(
+                            sort_by="cuda_time_total", row_limit=15
+                        )
+                        + "\n"
+                    )
+        except Exception as exc:  # noqa: BLE001 - diagnostics must never crash inference
+            logging.getLogger(__name__).warning(f"[ZW_PROFILE] table write failed: {exc}")
+        prof.export_chrome_trace(trace_path)
+        try:
+            with open(_prof_base + ".wall.log", "a") as fh:
+                fh.write(f"{n}\t{wall:.2f}\n")
+        except OSError:
+            pass
+        logging.getLogger(__name__).info(
+            f"[ZW_PROFILE] call {n}: wall={wall:.1f}s table={table_path} trace={trace_path}"
+        )
+        return out
+
+    VA_Server._infer_icl = _profiled_infer_icl
+
+    # Also time the between-chunk KV-cache call, so the per-chunk interval can be
+    # decomposed into model chunk / KV cache / client simulator.
+    _orig_kv_cache = VA_Server._compute_icl_kv_cache
+
+    def _timed_kv_cache(self, obs):
+        t0 = _time.time()
+        out = _orig_kv_cache(self, obs)
+        try:
+            with open(_prof_base + ".kv.log", "a") as fh:
+                fh.write(f"{_time.time() - t0:.2f}\n")
+        except OSError:
+            pass
+        return out
+
+    VA_Server._compute_icl_kv_cache = _timed_kv_cache
+
+
+# Local ARC multi-session hook (opt-in). One model in memory serves many
+# episodes: each client passes a `session_id`; the server keeps that session's
+# per-episode state and namespaces the transformer KV cache per session. The
+# websocket handler dispatches requests serially, so swapping state in/out
+# around each call is safe. Gated on ZW_MULTI_SESSION=1: unset -> exactly
+# upstream behaviour. See docs/inference_performance.md.
+if os.environ.get("ZW_MULTI_SESSION") == "1":
+    _orig_infer_session = VA_Server.infer
+    _SESSION_DEFAULTS = {
+        "chunk_idx": 0,
+        "init_latent": None,
+        "last_predicted_latents": None,
+        "last_predicted_actions": None,
+        "prompt_embeds": None,
+        "negative_prompt_embeds": None,
+        "target_prompt_embeds": None,
+        "use_icl": True,
+        "video_guidance_scale": -1.0,
+        "icl_guidance_scale": 5.0,
+        "use_icl_cfg": True,
+        "target_text_cfg_active": False,
+    }
+
+    def _sessioned_infer(self, obs):
+        sid = str(obs.get("session_id", "default")) if isinstance(obs, dict) else "default"
+        sessions = self.__dict__.setdefault("_arc_sessions", {})
+        sess = sessions.get(sid)
+        if sess is None:
+            sess = dict(_SESSION_DEFAULTS)
+            sess["cache_name"] = f"pos_{sid}"
+            sessions[sid] = sess
+        for _k, _v in sess.items():
+            setattr(self, _k, _v)
+        try:
+            out = _orig_infer_session(self, obs)
+        finally:
+            for _k in list(sess.keys()):
+                sess[_k] = getattr(self, _k, None)
+        return out
+
+    VA_Server.infer = _sessioned_infer
+
 
 def run(args):    
     

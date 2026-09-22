@@ -637,6 +637,7 @@ def eval_policy(task_name,
                 icl_latent_path=icl_latent_path,
                 video_guidance_scale=video_guidance_scale,
                 icl_guidance_scale=icl_guidance_scale,
+                session_id=os.environ.get("ZW_SESSION_ID", "default"),
             )
         )
         
@@ -659,7 +660,7 @@ def eval_policy(task_name,
                 observation = TASK_ENV.get_obs()
                 first_obs = format_obs(observation, prompt)
 
-            ret = model.infer(dict(obs=first_obs, prompt=prompt, save_visualization=save_visualization, video_guidance_scale=video_guidance_scale, action_guidance_scale=action_guidance_scale)) #(TASK_ENV, model, observation)
+            ret = model.infer(dict(obs=first_obs, prompt=prompt, save_visualization=save_visualization, video_guidance_scale=video_guidance_scale, action_guidance_scale=action_guidance_scale, session_id=os.environ.get("ZW_SESSION_ID", "default"))) #(TASK_ENV, model, observation)
             action = ret['action']
             if 'video' in ret:
                 imagined_video = ret['video']
@@ -704,7 +705,7 @@ def eval_policy(task_name,
                     
             first = False
 
-            model.infer(dict(obs = key_frame_list, compute_kv_cache=True, imagine=False, save_visualization=save_visualization, state=action))
+            model.infer(dict(obs = key_frame_list, compute_kv_cache=True, imagine=False, save_visualization=save_visualization, state=action, session_id=os.environ.get("ZW_SESSION_ID", "default")))
   
             if TASK_ENV.eval_success:
                 succ = True
